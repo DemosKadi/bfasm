@@ -36,14 +36,49 @@
     syscall
 %endmacro
 
-%define OP_ADD          0
-%define OP_SUB          1
-%define OP_MOVE_LEFT    2
-%define OP_MOVE_RIGHT   3
-%define OP_LOOP_LEFT    4
-%define OP_LOOP_RIGHT   5
-%define OP_PRINT        6
-%define OP_READ         7
+; This should not explicitly be written
+; Just used to indicate that unused code (which is zeroed) is invalid
+%define OP_INVALID  0
+
+; byte     word
+; opcode + count
+%define OP_ADD      1
+%define OP_ADD_SIZE 3
+
+; byte     word
+; opcode + count
+%define OP_SUB      2
+%define OP_SUB_SIZE 3
+
+; byte     word
+; opcode + count
+%define OP_MOVE_LEFT        3
+%define OP_MOVE_LEFT_SIZE   3
+
+; byte     word
+; opcode + count
+%define OP_MOVE_RIGHT       4
+%define OP_MOVE_RIGHT_SIZE  3
+
+; byte     word
+; opcode + jump target
+%define OP_LOOP_LEFT    5
+%define OP_LOOP_LEFT_SIZE 3
+
+; byte     word
+; opcode + jump target
+%define OP_LOOP_RIGHT       6
+%define OP_LOOP_RIGHT_SIZE  3
+
+; byte
+; opcode
+%define OP_PRINT        7
+%define OP_PRINT_SIZE   1
+
+; byte
+; opcode
+%define OP_READ         8
+%define OP_READ_SIZE    1
 
 bf_code_size    equ 0x20000 ; 128kib
 tape_size       equ 0x8000 ; 32kib
@@ -60,6 +95,7 @@ compilation_loop_imbalance_str      db "Compilation failed, loops are not matche
 compilation_loop_imbalance_str_len  equ $ - compilation_loop_imbalance_str
 
 op_instruction_table:
+    dq op_invalid
     dq op_add
     dq op_sub
     dq op_move_left
@@ -69,6 +105,22 @@ op_instruction_table:
     dq op_print
     dq op_read
     dq op_invalid
+
+compilation_jump_table:
+    times 43 dq compile.check_done  ; 0..43
+    dq compile.check_plus           ; 43
+    dq compile.check_comma          ; 44
+    dq compile.check_minus          ; 45
+    dq compile.check_dot            ; 46
+    times 13 dq compile.check_done  ; 47..60
+    dq compile.check_left           ; 60
+    dq compile.check_done           ; 61
+    dq compile.check_right          ; 62
+    times 28 dq compile.check_done  ; 63..91
+    dq compile.check_loop_left      ; 91
+    dq compile.check_done           ; 92
+    dq compile.check_loop_right     ; 93
+    times 162 dq compile.check_done ; 94..256
 
 %ifdef DEBUG
 add_str             db "add", 0xa
@@ -87,9 +139,10 @@ loop_left_str       db "loop_left", 0xa
 loop_left_str_len   equ $ - loop_left_str
 loop_right_str      db "loop_right", 0xa
 loop_right_str_len  equ $ - loop_right_str
-invlid_op_str       db "invalid instruction", 0xa
-invlid_op_str_len   equ $ - invlid_op_str
 %endif
+
+invalid_op_str      db "invalid instruction", 0xa
+invalid_op_str_len  equ $ - invalid_op_str
 
 crash_loop_left_str         db "[", 0xa
 crash_loop_left_str_len     db $ - crash_loop_left_str
@@ -163,16 +216,10 @@ _start:
 %define OUTPUT_IDX r11
 %define OUTPUT_IDX_WORD r11w
 
-%macro write_code0_m 1
-    mov byte [bf_code + OUTPUT_IDX], %1
-    inc OUTPUT_IDX
-%endmacro
-%define write_code0(code) write_code0_m code
-
 %macro CHECK 3
-    cmp rbx, %1 ; <
-    jne %2
-    write_code0(%3)
+    %1:
+    mov byte [bf_code + OUTPUT_IDX], %2
+    add OUTPUT_IDX, %3
     jmp .check_done
 %endmacro
 
@@ -184,49 +231,32 @@ compile:
     xor rbx, rbx
     mov bl, [bf_source + r10]; read the current instruction
 
-    .check_left:
-    CHECK '<', .check_right, OP_MOVE_LEFT
+    jmp [compilation_jump_table + rbx * 8]
 
-    .check_right:
-    CHECK '>', .check_plus, OP_MOVE_RIGHT
-
-    .check_plus:
-    CHECK '+', .check_minus, OP_ADD
-
-    .check_minus:
-    CHECK '-', .check_dot, OP_SUB
-
-    .check_dot:
-    CHECK '.', .check_comma, OP_PRINT
-
-    .check_comma:
-    CHECK ',', .check_loop_left, OP_READ
+    CHECK .check_left,  OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
+    CHECK .check_right, OP_MOVE_RIGHT, OP_MOVE_RIGHT_SIZE
+    CHECK .check_plus,  OP_ADD,        OP_ADD_SIZE
+    CHECK .check_minus, OP_SUB,        OP_SUB_SIZE
+    CHECK .check_dot,   OP_PRINT,      OP_PRINT_SIZE
+    CHECK .check_comma, OP_READ,       OP_READ_SIZE
 
     .check_loop_left:
-    cmp rbx, '[' ; [
-    jne .check_loop_right
-
     push OUTPUT_IDX ; pushing current output idx to stack, to get it when loop is closed
     mov byte [bf_code + OUTPUT_IDX], OP_LOOP_LEFT
     mov word [bf_code + OUTPUT_IDX + 1], 0 ; INFO: using word for now, since code is max 64k size so word should be enough
-    add OUTPUT_IDX, 3 ; INFO: adding opcode + wordsize
+    add OUTPUT_IDX, OP_LOOP_LEFT_SIZE ; INFO: adding opcode + wordsize
     push OUTPUT_IDX ; now pushing the jump offset to the stack
 
     jmp .check_done
 
     .check_loop_right:
-    cmp rbx, ']' ; ]
-    jne .check_done ; if the current symbol is unknown, just advance r10 and check the next one
-
-    xor rax, rax
-    xor rbx, rbx
     pop rax ; getting the jump offset
     pop rbx ; getting the offset of the loop beginning
     inc word bx ; getting the offset of the loop operand
 
     mov byte [bf_code + OUTPUT_IDX], OP_LOOP_RIGHT
     mov word [bf_code + OUTPUT_IDX + 1], ax ; writing the jump target for the beginning of the loop
-    add OUTPUT_IDX, 3
+    add OUTPUT_IDX, OP_LOOP_RIGHT_SIZE
 
     mov word [bf_code + rbx], OUTPUT_IDX_WORD ; updating the jump target for the beginning of th loop
     jmp .check_done
@@ -298,7 +328,7 @@ op_add:
 
     inc byte CELL ; I assume it wraps
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_ADD_SIZE
     ret
 
 op_read:
@@ -342,7 +372,7 @@ op_read:
     inc ax ; increase the input buffer start
     mov [input_buffer_start], ax ; write the new start into memory
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_READ_SIZE
     ret
 
 op_sub:
@@ -350,7 +380,7 @@ op_sub:
 
     dec byte CELL
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_SUB_SIZE
     ret
 
 op_print:
@@ -366,7 +396,7 @@ op_print:
 
     pop TAPE_IDX
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_PRINT_SIZE
     ret
 
 op_move_left:
@@ -374,7 +404,7 @@ op_move_left:
 
     dec TAPE_IDX ; if a program tries to go sub 0 the behaviour is undefined
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_MOVE_LEFT
     ret
 
 op_move_right:
@@ -382,7 +412,7 @@ op_move_right:
 
     inc TAPE_IDX ; if a program exceedes the tape length, it is undefined behaviour
 
-    inc PROGRAM_IDX ; increase the code index
+    add PROGRAM_IDX, OP_MOVE_RIGHT_SIZE
     ret
 
 op_loop_left:
@@ -393,7 +423,7 @@ op_loop_left:
     je .skip_loop
 
     ; if the current cell is not zero, increase index to next operation
-    add PROGRAM_IDX, 3 ; operand + word size
+    add PROGRAM_IDX, OP_LOOP_LEFT_SIZE ; operand + word size
 
     ret
 
@@ -408,7 +438,7 @@ op_loop_right:
     cmp byte CELL, 0
     jne .repeat_loop
 
-    add PROGRAM_IDX, 3 ; operand + word size
+    add PROGRAM_IDX, OP_LOOP_RIGHT_SIZE ; operand + word size
     ret
 
     ; else just go ahead
@@ -417,8 +447,9 @@ op_loop_right:
     ret
 
 op_invalid:
-    TRACE_OP invlid_op_str, invlid_op_str_len
-    ret
+    TRACE_OP invalid_op_str, invalid_op_str_len
+    eprint invalid_op_str, invalid_op_str_len
+    exit 1
 
 %ifdef DEBUG
 %macro DBG_PRINT 1
