@@ -1,0 +1,4 @@
+working:
+    - hw.bf
+    - 10k_squares.bf
+    - test.bf
