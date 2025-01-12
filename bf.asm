@@ -47,6 +47,7 @@
 
 bf_code_size    equ 0x20000 ; 128kib
 tape_size       equ 0x8000 ; 32kib
+input_buf_size  equ 0x10000 ; 64kib
 
 section .data
 usage_msg_str       db "usage: bf <path to brainfuck program>", 0xa
@@ -100,6 +101,10 @@ bf_source       resb    bf_code_size
 bf_code         resb    bf_code_size
 bf_data         resb    tape_size
 bf_code_len     resw    1
+
+input_buffer        resb    input_buf_size
+input_buffer_start  resw    1
+input_buffer_end    resw    1
 
 section .text
 global _start
@@ -291,14 +296,51 @@ brainfuck:
 op_add:
     TRACE_OP add_str, add_str_len
 
-    inc byte CELL
+    inc byte CELL ; I assume it wraps
 
     inc PROGRAM_IDX ; increase the code index
     ret
 
 op_read:
     TRACE_OP read_str, read_str_len
-    ; TODO:
+
+    ; clear rax and rbx
+    xor rax, rax
+    xor rbx, rbx
+    ; read the positions
+    mov ax, [input_buffer_start]
+    mov bx, [input_buffer_end]
+    cmp ax, bx
+    ; check if buffer is empty
+    jne .read_from_buffer
+    ; read from stdin into buffer if buffer is empty
+    ;xor rax, rax ; reset buffer start to 0
+    ;xor rbx, rbx
+
+    push TAPE_IDX
+
+    ; make read syscall into input_buffer
+    mov rax, 0 ; sys_read
+    mov rdi, 0 ; stdin
+    mov rsi, input_buffer
+    mov rdx, input_buf_size
+    syscall
+
+    pop TAPE_IDX
+
+    ; write new input buffer start and end into 'variables'
+    mov word [input_buffer_end], ax
+    mov word [input_buffer_start], 0
+
+
+    .read_from_buffer:
+    xor rax, rax ; clear rax 
+    mov ax, [input_buffer_start] ; read input_buffer_start into rax
+
+    mov bl, [input_buffer + rax] ; read the current input value into bl
+    mov CELL, bl ; move the current input value into the current cell
+    inc ax ; increase the input buffer start
+    mov [input_buffer_start], ax ; write the new start into memory
 
     inc PROGRAM_IDX ; increase the code index
     ret
@@ -314,10 +356,6 @@ op_sub:
 op_print:
     TRACE_OP print_str, print_str_len
 
-    ;push rax
-    ;push rdi
-    ;push rsi
-    ;push rdx
     push TAPE_IDX
 
     mov rax, 1; sys_write
@@ -327,10 +365,6 @@ op_print:
     syscall
 
     pop TAPE_IDX
-    ;pop rdx
-    ;pop rsi
-    ;pop rdi
-    ;pop rax
 
     inc PROGRAM_IDX ; increase the code index
     ret
@@ -338,7 +372,7 @@ op_print:
 op_move_left:
     TRACE_OP move_left_str, move_left_str_len
 
-    dec TAPE_IDX ; TODO: check if this is wrapping
+    dec TAPE_IDX ; if a program tries to go sub 0 the behaviour is undefined
 
     inc PROGRAM_IDX ; increase the code index
     ret
@@ -346,7 +380,7 @@ op_move_left:
 op_move_right:
     TRACE_OP move_right_str, move_right_str_len
 
-    inc TAPE_IDX ; TODO: check if this is wrapping
+    inc TAPE_IDX ; if a program exceedes the tape length, it is undefined behaviour
 
     inc PROGRAM_IDX ; increase the code index
     ret
