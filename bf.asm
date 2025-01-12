@@ -107,20 +107,20 @@ op_instruction_table:
     dq op_invalid
 
 compilation_jump_table:
-    times 43 dq compile.check_done  ; 0..43
-    dq compile.check_plus           ; 43
-    dq compile.check_comma          ; 44
-    dq compile.check_minus          ; 45
-    dq compile.check_dot            ; 46
-    times 13 dq compile.check_done  ; 47..60
-    dq compile.check_left           ; 60
-    dq compile.check_done           ; 61
-    dq compile.check_right          ; 62
-    times 28 dq compile.check_done  ; 63..91
-    dq compile.check_loop_left      ; 91
-    dq compile.check_done           ; 92
-    dq compile.check_loop_right     ; 93
-    times 162 dq compile.check_done ; 94..256
+    times 43 dq compile.unknown  ; 0..43
+    dq compile.plus              ; 43
+    dq compile.comma             ; 44
+    dq compile.minus             ; 45
+    dq compile.dot               ; 46
+    times 13 dq compile.unknown  ; 47..60
+    dq compile.left              ; 60
+    dq compile.unknown           ; 61
+    dq compile.right             ; 62
+    times 28 dq compile.unknown  ; 63..91
+    dq compile.loop_left         ; 91
+    dq compile.unknown           ; 92
+    dq compile.loop_right        ; 93
+    times 162 dq compile.unknown ; 94..256
 
 %ifdef DEBUG
 add_str             db "add", 0xa
@@ -202,7 +202,6 @@ _start:
     syscall
 
     call compile
-;.compile_done:
 
 %ifdef DEBUG
     call dbg_print
@@ -220,36 +219,64 @@ _start:
     %1:
     mov byte [bf_code + OUTPUT_IDX], %2
     add OUTPUT_IDX, %3
-    jmp .check_done
+    inc PROGRAM_IDX
+    jmp .step_done
+%endmacro
+
+%macro COMPILE 3
+    %1:
+    mov byte [bf_code + OUTPUT_IDX], %2
+
+    xor rax, rax ; rax is used as the counter
+
+    %1_collect:
+    ; read the 'next' byte and check if it is still a valid move left byte
+    cmp bl, [bf_source + PROGRAM_IDX]
+    ; if it is not move_left anymore jumpt to check done
+    jne %1_collect_done
+
+    inc rax ; increase rax everytime another of the same elements was found
+    inc PROGRAM_IDX
+
+    ; check if PROGRAM_IDX is out of bounds and go to compilation finished if it is
+    cmp PROGRAM_IDX, r9
+    jl  %1_collect
+    jmp .done
+
+    %1_collect_done:
+    mov word [bf_code + OUTPUT_IDX + 1], ax
+    add OUTPUT_IDX, %3
+    jmp .step_done
 %endmacro
 
 compile:
     xor PROGRAM_IDX, PROGRAM_IDX ; the program index
     xor OUTPUT_IDX, OUTPUT_IDX ; the output index
 
-    .compile_impl:
+    .implementation:
     xor rbx, rbx
-    mov bl, [bf_source + r10]; read the current instruction
+    mov bl, [bf_source + PROGRAM_IDX]; read the current instruction
 
     jmp [compilation_jump_table + rbx * 8]
 
-    CHECK .check_left,  OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
-    CHECK .check_right, OP_MOVE_RIGHT, OP_MOVE_RIGHT_SIZE
-    CHECK .check_plus,  OP_ADD,        OP_ADD_SIZE
-    CHECK .check_minus, OP_SUB,        OP_SUB_SIZE
-    CHECK .check_dot,   OP_PRINT,      OP_PRINT_SIZE
-    CHECK .check_comma, OP_READ,       OP_READ_SIZE
+    CHECK   .dot,   OP_PRINT,      OP_PRINT_SIZE
+    CHECK   .comma, OP_READ,       OP_READ_SIZE
 
-    .check_loop_left:
+    COMPILE .right, OP_MOVE_RIGHT, OP_MOVE_RIGHT_SIZE
+    COMPILE .plus,  OP_ADD,        OP_ADD_SIZE
+    COMPILE .minus, OP_SUB,        OP_SUB_SIZE
+    COMPILE .left,  OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
+
+    .loop_left:
     push OUTPUT_IDX ; pushing current output idx to stack, to get it when loop is closed
     mov byte [bf_code + OUTPUT_IDX], OP_LOOP_LEFT
     mov word [bf_code + OUTPUT_IDX + 1], 0 ; INFO: using word for now, since code is max 64k size so word should be enough
     add OUTPUT_IDX, OP_LOOP_LEFT_SIZE ; INFO: adding opcode + wordsize
     push OUTPUT_IDX ; now pushing the jump offset to the stack
+    inc PROGRAM_IDX
+    jmp .step_done
 
-    jmp .check_done
-
-    .check_loop_right:
+    .loop_right:
     pop rax ; getting the jump offset
     pop rbx ; getting the offset of the loop beginning
     inc word bx ; getting the offset of the loop operand
@@ -259,21 +286,23 @@ compile:
     add OUTPUT_IDX, OP_LOOP_RIGHT_SIZE
 
     mov word [bf_code + rbx], OUTPUT_IDX_WORD ; updating the jump target for the beginning of th loop
-    jmp .check_done
+    inc PROGRAM_IDX
+    jmp .step_done
 
-    .check_done:
-    inc PROGRAM_IDX ; increment the current counter
+    .unknown:
+    inc PROGRAM_IDX
+
+    .step_done:
     cmp PROGRAM_IDX, r9 ; check if the current counter is the same 
-    jl .compile_impl ; jump to compile impl if the current index is less than the size
+    jl .implementation ; jump to compile impl if the current index is less than the size
 
-    .compilation_done:
-
+    .done:
     xor PROGRAM_IDX, PROGRAM_IDX ; reset r10 to 0
     mov word [bf_code_len], OUTPUT_IDX_WORD
     xor OUTPUT_IDX, OUTPUT_IDX ; reset r10 to 0
     ret
 
-    .compilation_fail:
+    .failed:
     eprint compilation_loop_imbalance_str, compilation_loop_imbalance_str_len
     exit 1
 
@@ -326,7 +355,9 @@ brainfuck:
 op_add:
     TRACE_OP add_str, add_str_len
 
-    inc byte CELL ; I assume it wraps
+    ; get the add count and add it to the cell
+    mov ax, [bf_code + PROGRAM_IDX + 1]
+    add word CELL, ax
 
     add PROGRAM_IDX, OP_ADD_SIZE
     ret
@@ -344,8 +375,6 @@ op_read:
     ; check if buffer is empty
     jne .read_from_buffer
     ; read from stdin into buffer if buffer is empty
-    ;xor rax, rax ; reset buffer start to 0
-    ;xor rbx, rbx
 
     push TAPE_IDX
 
@@ -378,7 +407,9 @@ op_read:
 op_sub:
     TRACE_OP sub_str, sub_str_len
 
-    dec byte CELL
+    ; get the sub count and sub it from the cell
+    mov ax, [bf_code + PROGRAM_IDX + 1]
+    sub word CELL, ax
 
     add PROGRAM_IDX, OP_SUB_SIZE
     ret
@@ -402,7 +433,10 @@ op_print:
 op_move_left:
     TRACE_OP move_left_str, move_left_str_len
 
-    dec TAPE_IDX ; if a program tries to go sub 0 the behaviour is undefined
+    ; get the move count and sub it from the TAPE_IDX
+    xor rax, rax
+    mov ax, [bf_code + PROGRAM_IDX + 1]
+    sub TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_LEFT
     ret
@@ -410,7 +444,10 @@ op_move_left:
 op_move_right:
     TRACE_OP move_right_str, move_right_str_len
 
-    inc TAPE_IDX ; if a program exceedes the tape length, it is undefined behaviour
+    ; get the move count and sub it from the TAPE_IDX
+    xor rax, rax
+    mov ax, [bf_code + PROGRAM_IDX + 1]
+    add TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_RIGHT_SIZE
     ret
