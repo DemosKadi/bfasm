@@ -77,6 +77,11 @@
 %define OP_READ         8
 %define OP_READ_SIZE    1
 
+; byte
+; opcode
+%define OP_SET_CELL_ZERO        9
+%define OP_SET_CELL_ZERO_SIZE   1
+
 bf_code_size    equ 0x20000 ; 128kib
 tape_size       equ 0x8000 ; 32kib
 input_buf_size  equ 0x10000 ; 64kib
@@ -93,6 +98,7 @@ op_instruction_table:
     dq op_loop_right
     dq op_print
     dq op_read
+    dq op_set_cell_zero
     dq op_invalid
 
 compilation_jump_table:
@@ -213,8 +219,7 @@ compile:
     xor OUTPUT_IDX, OUTPUT_IDX ; the output index
 
     .implementation:
-    xor rbx, rbx
-    mov bl, [bf_source + PROGRAM_IDX]; read the current instruction
+    movzx rbx, byte [bf_source + PROGRAM_IDX]; read the current instruction
 
     jmp [compilation_jump_table + rbx * 8]
 
@@ -227,6 +232,30 @@ compile:
     .left:  COMPILE OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
 
     .loop_left:
+    mov rax, bf_source
+    add rax, PROGRAM_IDX
+
+    ; check if the next is a -
+    inc rax
+    cmp byte [rax], '-'
+    jne .loop_left_regular
+    ; that check was wrong, it was an and check
+    ; or a plus
+    ;cmp byte [rax], '+'
+    ;jne .loop_left_regular
+
+    ; check if the op after that is the closing loop
+    inc rax
+    cmp byte [rax], ']'
+    jne .loop_left_regular
+
+    mov byte [bf_code + OUTPUT_IDX], OP_SET_CELL_ZERO
+    inc OUTPUT_IDX
+    add PROGRAM_IDX, 3
+    jmp .step_done
+
+
+    .loop_left_regular:
     push OUTPUT_IDX ; pushing current output idx to stack, to get it when loop is closed
     mov byte [bf_code + OUTPUT_IDX], OP_LOOP_LEFT
     mov word [bf_code + OUTPUT_IDX + 1], 0 ; INFO: using word for now, since code is max 64k size so word should be enough
@@ -293,17 +322,14 @@ brainfuck:
     xor TAPE_IDX, TAPE_IDX
 
     .brainfuck_impl:
-    ;mov r12, [bf_code_len]
-    ;pop r12 ; read the size from the stack
     cmp word PROGRAM_IDX_WORD, [bf_code_len]
     ; check if the current index (r10) is lower than the code size (r12)
     ; if it is:
     ;   go to the actual implementation
     ; else:
     ;   return
-    jge .brainfuck_done
-    xor r13, r13 ; make sure r13 is empty
-    mov byte r13b, [bf_code + PROGRAM_IDX] ; read the current instruction
+    jae .brainfuck_done
+    movzx r13, byte [bf_code + PROGRAM_IDX] ; read the current instruction
 
     call [op_instruction_table + r13 * 8] ; call the function for the current op
 
@@ -326,12 +352,9 @@ op_add:
 op_read:
     trace("read")
 
-    ; clear rax and rbx
-    xor rax, rax
-    xor rbx, rbx
     ; read the positions
-    mov ax, [input_buffer_start]
-    mov bx, [input_buffer_end]
+    movzx rax, word [input_buffer_start]
+    movzx rbx, word [input_buffer_end]
     cmp ax, bx
     ; check if buffer is empty
     jne .read_from_buffer
@@ -354,8 +377,7 @@ op_read:
 
 
     .read_from_buffer:
-    xor rax, rax ; clear rax 
-    mov ax, [input_buffer_start] ; read input_buffer_start into rax
+    movzx rax, word [input_buffer_start] ; read input_buffer_start into rax
 
     mov bl, [input_buffer + rax] ; read the current input value into bl
     mov CELL, bl ; move the current input value into the current cell
@@ -380,15 +402,6 @@ op_print:
 
     movzx rsi, byte CELL
     call print_buffered
-    ;push TAPE_IDX
-
-    ;mov rax, 1; sys_write
-    ;mov rdi, 1; stdout
-    ;lea rsi, CELL
-    ;mov rdx, 1; message length
-    ;syscall
-
-    ;pop TAPE_IDX
 
     add PROGRAM_IDX, OP_PRINT_SIZE
     ret
@@ -397,8 +410,7 @@ op_move_left:
     trace("move left")
 
     ; get the move count and sub it from the TAPE_IDX
-    xor rax, rax
-    mov ax, [bf_code + PROGRAM_IDX + 1]
+    movzx rax, word [bf_code + PROGRAM_IDX + 1]
     sub TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_LEFT
@@ -408,8 +420,7 @@ op_move_right:
     trace("move right")
 
     ; get the move count and sub it from the TAPE_IDX
-    xor rax, rax
-    mov ax, [bf_code + PROGRAM_IDX + 1]
+    movzx rax, word [bf_code + PROGRAM_IDX + 1]
     add TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_RIGHT_SIZE
@@ -444,6 +455,11 @@ op_loop_right:
     ; else just go ahead
     .repeat_loop:
     mov word PROGRAM_IDX_WORD, [bf_code + PROGRAM_IDX + 1]
+    ret
+
+op_set_cell_zero:
+    mov CELL, byte 0
+    inc PROGRAM_IDX
     ret
 
 op_invalid:
