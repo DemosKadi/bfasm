@@ -80,6 +80,7 @@
 bf_code_size    equ 0x20000 ; 128kib
 tape_size       equ 0x8000 ; 32kib
 input_buf_size  equ 0x10000 ; 64kib
+print_buffer_capacity   equ 0xFF ; 255b
 
 section .data
 op_instruction_table:
@@ -115,6 +116,10 @@ bf_source       resb    bf_code_size
 bf_code         resb    bf_code_size
 bf_data         resb    tape_size
 bf_code_len     resw    1
+; buffering stdout
+print_buffer        resb    print_buffer_capacity
+; the actual size of the data currently in the buffer
+print_buffer_size   resb    1
 
 input_buffer        resb    input_buf_size
 input_buffer_start  resw    1
@@ -305,6 +310,7 @@ brainfuck:
     jmp .brainfuck_impl ; jump back to the beginning of the implemantation
 
     .brainfuck_done:
+    call print_flush
     ret
 
 op_add:
@@ -372,15 +378,17 @@ op_sub:
 op_print:
     trace("print")
 
-    push TAPE_IDX
+    movzx rsi, byte CELL
+    call print_buffered
+    ;push TAPE_IDX
 
-    mov rax, 1; sys_write
-    mov rdi, 1; stdout
-    lea rsi, CELL
-    mov rdx, 1; message length
-    syscall
+    ;mov rax, 1; sys_write
+    ;mov rdi, 1; stdout
+    ;lea rsi, CELL
+    ;mov rdx, 1; message length
+    ;syscall
 
-    pop TAPE_IDX
+    ;pop TAPE_IDX
 
     add PROGRAM_IDX, OP_PRINT_SIZE
     ret
@@ -453,3 +461,48 @@ open_file_error:
 
 invalid_instruction:
     exit 1
+
+;; expects a single byte to print
+;; will flush the buffer to stdout if the buffer is full or 0xa (a new line) was printed
+print_buffered:
+    ; TODO: assume that the buffer is not full
+    movzx rax, byte [print_buffer_size]
+    mov byte [print_buffer + rax], sil
+    inc byte [print_buffer_size]
+
+    ; check if character to print is a new_line
+    cmp byte sil, 0xa
+    je short .flush_buffer
+
+    ; check if the buffer was filled
+    ;movzx rax, byte [print_buffer_size]
+    cmp byte [print_buffer_size], print_buffer_capacity
+    ;cmp ax, print_buffer_capacity
+    ; only check for equality there is no byte >0xFF
+    je short .flush_buffer
+
+    ret
+
+    .flush_buffer:
+    call print_flush
+
+    ; TODO: check if buffer is full and then print
+    ret
+
+;; flushes the buffer
+print_flush:
+    push TAPE_IDX
+
+    mov rax, 1; sys_write
+    mov rdi, 1; stdout
+    lea rsi, print_buffer
+    ; clears rdx and moves the data in
+    movzx rdx, byte [print_buffer_size]; message length
+    syscall
+
+    ; reset the buffer size to zero after the print
+    mov byte [print_buffer_size], 0
+
+    pop TAPE_IDX
+
+    ret
