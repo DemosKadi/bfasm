@@ -20,6 +20,9 @@ release: object-release
 object-release:
     nasm -f elf64 -O3 -o bf.o bf.asm
 
+debug FILE: build
+    gdb --command=debug.gdb --args ./bf {{FILE}}
+
 clean:
     rm bf.o bf
 

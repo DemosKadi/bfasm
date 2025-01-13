@@ -1,34 +1,31 @@
-%macro print 2
+%macro print_raw 2+
+    ; store the string at a macro local, pseudo label
+    ; then skip to the print implementation
+    jmp %%endstr
+    %%str:  db %2
+    %%endstr:
+
     push rax
     push rdi
     push rsi
     push rdx
+
     mov rax, 1; sys_write
-    mov rdi, 1; stdout
-    mov rsi, %1; message to write
-    mov rdx, %2; message length
+    mov rdi, %1; stderr
+    mov rsi, %%str; message to write
+    mov rdx, %%endstr - %%str; message length
     syscall
+
     pop rdx
     pop rsi
     pop rdi
     pop rax
 %endmacro
 
-%macro eprint 2
-    push rax
-    push rdi
-    push rsi
-    push rdx
-    mov rax, 1; sys_write
-    mov rdi, 2; stderr
-    mov rsi, %1; message to write
-    mov rdx, %2; message length
-    syscall
-    pop rdx
-    pop rsi
-    pop rdi
-    pop rax
-%endmacro
+%define print(s) print_raw 1, s
+%define println(s) print_raw 1, s, 0xa
+%define eprint(s) print_raw 2, s
+%define eprintln(s) print_raw 2, s, 0xa
 
 %macro exit 1
     mov rax, 60; sys_exit
@@ -85,15 +82,6 @@ tape_size       equ 0x8000 ; 32kib
 input_buf_size  equ 0x10000 ; 64kib
 
 section .data
-usage_msg_str       db "usage: bf <path to brainfuck program>", 0xa
-usage_msg_str_len   equ $ - usage_msg_str
-
-open_file_fail_str      db "could not open file", 0xa
-open_file_fail_str_len  equ $ - open_file_fail_str
-
-compilation_loop_imbalance_str      db "Compilation failed, loops are not matched", 0xa
-compilation_loop_imbalance_str_len  equ $ - compilation_loop_imbalance_str
-
 op_instruction_table:
     dq op_invalid
     dq op_add
@@ -121,33 +109,6 @@ compilation_jump_table:
     dq compile.unknown           ; 92
     dq compile.loop_right        ; 93
     times 162 dq compile.unknown ; 94..256
-
-%ifdef DEBUG
-add_str             db "add", 0xa
-add_str_len         equ $ - add_str
-read_str            db "read", 0xa
-read_str_len        equ $ - read_str
-sub_str             db "sub", 0xa
-sub_str_len         equ $ - sub_str
-print_str           db "print", 0xa
-print_str_len       equ $ - print_str
-move_left_str       db "move_left", 0xa
-move_left_str_len   equ $ - move_left_str
-move_right_str      db "move_right", 0xa
-move_right_str_len  equ $ - move_right_str
-loop_left_str       db "loop_left", 0xa
-loop_left_str_len   equ $ - loop_left_str
-loop_right_str      db "loop_right", 0xa
-loop_right_str_len  equ $ - loop_right_str
-%endif
-
-invalid_op_str      db "invalid instruction", 0xa
-invalid_op_str_len  equ $ - invalid_op_str
-
-crash_loop_left_str         db "[", 0xa
-crash_loop_left_str_len     db $ - crash_loop_left_str
-crash_loop_right_str        db "]", 0xa
-crash_loop_right_str_len    db $ - crash_loop_right_str
 
 section .bss
 bf_source       resb    bf_code_size
@@ -202,11 +163,6 @@ _start:
     syscall
 
     call compile
-
-%ifdef DEBUG
-    call dbg_print
-%endif
-
     call brainfuck
 
     exit 0
@@ -215,37 +171,35 @@ _start:
 %define OUTPUT_IDX r11
 %define OUTPUT_IDX_WORD r11w
 
-%macro CHECK 3
-    %1:
-    mov byte [bf_code + OUTPUT_IDX], %2
-    add OUTPUT_IDX, %3
+%macro CHECK 2
+    mov byte [bf_code + OUTPUT_IDX], %1
+    add OUTPUT_IDX, %2
     inc PROGRAM_IDX
     jmp .step_done
 %endmacro
 
-%macro COMPILE 3
-    %1:
-    mov byte [bf_code + OUTPUT_IDX], %2
+%macro COMPILE 2
+    mov byte [bf_code + OUTPUT_IDX], %1
 
     xor rax, rax ; rax is used as the counter
 
-    %1_collect:
+    %%collect:
     ; read the 'next' byte and check if it is still a valid move left byte
     cmp bl, [bf_source + PROGRAM_IDX]
     ; if it is not move_left anymore jumpt to check done
-    jne %1_collect_done
+    jne %%collect_done
 
     inc rax ; increase rax everytime another of the same elements was found
     inc PROGRAM_IDX
 
     ; check if PROGRAM_IDX is out of bounds and go to compilation finished if it is
     cmp PROGRAM_IDX, r9
-    jl  %1_collect
+    jl  %%collect
     jmp .done
 
-    %1_collect_done:
+    %%collect_done:
     mov word [bf_code + OUTPUT_IDX + 1], ax
-    add OUTPUT_IDX, %3
+    add OUTPUT_IDX, %2
     jmp .step_done
 %endmacro
 
@@ -259,13 +213,13 @@ compile:
 
     jmp [compilation_jump_table + rbx * 8]
 
-    CHECK   .dot,   OP_PRINT,      OP_PRINT_SIZE
-    CHECK   .comma, OP_READ,       OP_READ_SIZE
+    .dot:   CHECK   OP_PRINT,      OP_PRINT_SIZE
+    .comma: CHECK   OP_READ,       OP_READ_SIZE
 
-    COMPILE .right, OP_MOVE_RIGHT, OP_MOVE_RIGHT_SIZE
-    COMPILE .plus,  OP_ADD,        OP_ADD_SIZE
-    COMPILE .minus, OP_SUB,        OP_SUB_SIZE
-    COMPILE .left,  OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
+    .right: COMPILE OP_MOVE_RIGHT, OP_MOVE_RIGHT_SIZE
+    .plus:  COMPILE OP_ADD,        OP_ADD_SIZE
+    .minus: COMPILE OP_SUB,        OP_SUB_SIZE
+    .left:  COMPILE OP_MOVE_LEFT,  OP_MOVE_LEFT_SIZE
 
     .loop_left:
     push OUTPUT_IDX ; pushing current output idx to stack, to get it when loop is closed
@@ -303,7 +257,7 @@ compile:
     ret
 
     .failed:
-    eprint compilation_loop_imbalance_str, compilation_loop_imbalance_str_len
+    eprintln("Compilation failed, loops are not matched")
     exit 1
 
 %define PROGRAM_IDX r10
@@ -320,13 +274,14 @@ compile:
     pop PROGRAM_IDX
 %endmacro
 
-%macro TRACE_OP 2
-    %ifdef DEBUG
-        ;SAVE
-        ;print %1, %2
-        ;LOAD
+%macro TRACE_OP 1
+    %ifdef TRACE
+        SAVE
+        println(%1)
+        LOAD
     %endif
 %endmacro
+%define trace(op) TRACE_OP op
 
 brainfuck:
     xor PROGRAM_IDX, PROGRAM_IDX
@@ -353,7 +308,7 @@ brainfuck:
     ret
 
 op_add:
-    TRACE_OP add_str, add_str_len
+    trace("add")
 
     ; get the add count and add it to the cell
     mov ax, [bf_code + PROGRAM_IDX + 1]
@@ -363,7 +318,7 @@ op_add:
     ret
 
 op_read:
-    TRACE_OP read_str, read_str_len
+    trace("read")
 
     ; clear rax and rbx
     xor rax, rax
@@ -405,7 +360,7 @@ op_read:
     ret
 
 op_sub:
-    TRACE_OP sub_str, sub_str_len
+    trace("sub")
 
     ; get the sub count and sub it from the cell
     mov ax, [bf_code + PROGRAM_IDX + 1]
@@ -415,7 +370,7 @@ op_sub:
     ret
 
 op_print:
-    TRACE_OP print_str, print_str_len
+    trace("print")
 
     push TAPE_IDX
 
@@ -431,7 +386,7 @@ op_print:
     ret
 
 op_move_left:
-    TRACE_OP move_left_str, move_left_str_len
+    trace("move left")
 
     ; get the move count and sub it from the TAPE_IDX
     xor rax, rax
@@ -442,7 +397,7 @@ op_move_left:
     ret
 
 op_move_right:
-    TRACE_OP move_right_str, move_right_str_len
+    trace("move right")
 
     ; get the move count and sub it from the TAPE_IDX
     xor rax, rax
@@ -453,7 +408,7 @@ op_move_right:
     ret
 
 op_loop_left:
-    TRACE_OP loop_left_str, loop_left_str_len
+    trace("loop left")
 
     ; check if the current cell is 0
     cmp byte CELL, 0
@@ -470,7 +425,7 @@ op_loop_left:
     ret
 
 op_loop_right:
-    TRACE_OP loop_right_str, loop_right_str_len
+    trace("loop right")
     ; check if currend cell is not zero
     cmp byte CELL, 0
     jne .repeat_loop
@@ -484,98 +439,16 @@ op_loop_right:
     ret
 
 op_invalid:
-    TRACE_OP invalid_op_str, invalid_op_str_len
-    eprint invalid_op_str, invalid_op_str_len
+    trace("invalid operation")
+    eprintln("invalid instruction")
     exit 1
 
-%ifdef DEBUG
-%macro DBG_PRINT 1
-    SAVE
-    push rax
-    push rbx
-    push rdi
-    push rsi
-    push rdx
-
-    push %1
-
-    mov rax, 1; sys_write
-    mov rdi, 1; stdout
-    mov rbx, %1
-    mov rsi, rsp
-    ;lea rsi, rbx
-    ;mov rsi, %1; message to write
-    mov rdx, 1; message length
-    syscall
-
-    add rsp, 8
-
-    pop rdx
-    pop rsi
-    pop rdi
-    pop rbx
-    pop rax
-    LOAD
-%endmacro
-
-%macro DBG_IMPL 3
-    cmp byte bl, %1
-    jne %2
-    DBG_PRINT %3
-    inc PROGRAM_IDX
-    jmp .dbg_print_impl
-%endmacro
-
-%macro DBG_IMPL_LOOP 3
-    cmp byte bl, %1
-    jne %2
-    DBG_PRINT %3
-    add PROGRAM_IDX, 3
-    jmp .dbg_print_impl
-%endmacro
-
-dbg_print:
-    xor PROGRAM_IDX, PROGRAM_IDX
-    .dbg_print_impl:
-    ;mov  ax, [bf_code_len]
-    cmp word PROGRAM_IDX_WORD, [bf_code_len]
-    jge .dbg_done
-
-    mov byte bl, [bf_code + PROGRAM_IDX]
-
-    .dbg_add:
-    DBG_IMPL OP_ADD, .dbg_sub, '+'
-    .dbg_sub:
-    DBG_IMPL OP_SUB, .dbg_move_left, '-'
-    .dbg_move_left:
-    DBG_IMPL OP_MOVE_LEFT, .dbg_move_right, '<'
-    .dbg_move_right:
-    DBG_IMPL OP_MOVE_RIGHT, .dbg_loop_left, '>'
-    .dbg_loop_left:
-    DBG_IMPL_LOOP OP_LOOP_LEFT, .dbg_loop_right, '['
-    .dbg_loop_right:
-    DBG_IMPL_LOOP OP_LOOP_RIGHT, .dbg_op_print, ']'
-    .dbg_op_print:
-    DBG_IMPL OP_PRINT, .dbg_op_read, '.'
-    .dbg_op_read:
-    DBG_IMPL OP_READ, .dbg_invalid, ','
-    .dbg_invalid:
-    DBG_PRINT '!'
-    inc PROGRAM_IDX
-    jmp .dbg_print_impl
-
-    .dbg_done:
-    ret
-;dbg_done:
-    ;jmp dbg_print_done
-%endif
-
 no_args:
-    eprint usage_msg_str, usage_msg_str_len
+    eprintln("usage: bf <path to brainfuck program>")
     exit   1
 
 open_file_error:
-    eprint open_file_fail_str, open_file_fail_str_len
+    eprintln("could not open file")
     exit   1
 
 invalid_instruction:
