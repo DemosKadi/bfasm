@@ -13,6 +13,9 @@ release:
 debug FILE: build
     gdb --command=debug.gdb --args ./bf {{FILE}}
 
+bench FILE: release
+    hyperfine --shell=none -r 5 "./bf {{FILE}}"
+
 clean:
     rm bf.o bf
 

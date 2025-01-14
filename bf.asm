@@ -331,9 +331,9 @@ brainfuck:
     jae .brainfuck_done
     movzx r13, byte [bf_code + PROGRAM_IDX] ; read the current instruction
 
-    call [op_instruction_table + r13 * 8] ; call the function for the current op
+    jmp [op_instruction_table + r13 * 8] ; call the function for the current op
 
-    jmp .brainfuck_impl ; jump back to the beginning of the implemantation
+    ;jmp .brainfuck_impl ; jump back to the beginning of the implemantation
 
     .brainfuck_done:
     call print_flush
@@ -347,7 +347,7 @@ op_add:
     add word CELL, ax
 
     add PROGRAM_IDX, OP_ADD_SIZE
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_read:
     trace("read")
@@ -385,7 +385,7 @@ op_read:
     mov [input_buffer_start], ax ; write the new start into memory
 
     add PROGRAM_IDX, OP_READ_SIZE
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_sub:
     trace("sub")
@@ -395,7 +395,7 @@ op_sub:
     sub word CELL, ax
 
     add PROGRAM_IDX, OP_SUB_SIZE
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_print:
     trace("print")
@@ -404,7 +404,7 @@ op_print:
     call print_buffered
 
     add PROGRAM_IDX, OP_PRINT_SIZE
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_move_left:
     trace("move left")
@@ -414,7 +414,7 @@ op_move_left:
     sub TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_LEFT
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_move_right:
     trace("move right")
@@ -424,7 +424,7 @@ op_move_right:
     add TAPE_IDX, rax
 
     add PROGRAM_IDX, OP_MOVE_RIGHT_SIZE
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_loop_left:
     trace("loop left")
@@ -436,12 +436,12 @@ op_loop_left:
     ; if the current cell is not zero, increase index to next operation
     add PROGRAM_IDX, OP_LOOP_LEFT_SIZE ; operand + word size
 
-    ret
+    jmp brainfuck.brainfuck_impl
 
     .skip_loop:
     ; if the current cell is 0, skip to the next closing index
     mov word PROGRAM_IDX_WORD, [bf_code + PROGRAM_IDX + 1]
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_loop_right:
     trace("loop right")
@@ -450,17 +450,17 @@ op_loop_right:
     jne .repeat_loop
 
     add PROGRAM_IDX, OP_LOOP_RIGHT_SIZE ; operand + word size
-    ret
+    jmp brainfuck.brainfuck_impl
 
     ; else just go ahead
     .repeat_loop:
     mov word PROGRAM_IDX_WORD, [bf_code + PROGRAM_IDX + 1]
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_set_cell_zero:
     mov CELL, byte 0
     inc PROGRAM_IDX
-    ret
+    jmp brainfuck.brainfuck_impl
 
 op_invalid:
     trace("invalid operation")
